@@ -1,0 +1,8 @@
+.git
+.github
+.bootstrap
+.env
+data
+__pycache__
+*.py[cod]
+.venv
