@@ -1,0 +1,17 @@
+services:
+  telegram:
+    build: .
+    command: ["python", "main.py", "telegram"]
+    env_file: .env
+    volumes:
+      - deal_data:/app/data
+    restart: unless-stopped
+  watcher:
+    build: .
+    command: ["python", "main.py", "watch", "--interval", "300"]
+    env_file: .env
+    volumes:
+      - deal_data:/app/data
+    restart: unless-stopped
+volumes:
+  deal_data:
