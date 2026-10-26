@@ -583,7 +583,7 @@ def run_telegram_poll(db: Database) -> None:
                     telegram_call("sendMessage", {"chat_id": chat_id, "text": "Бот настроен для другого чата."})
                     continue
                 if command in ("/start", "/help"):
-                    answer = "Tech Deal Hunter готов.\\n/id — показать ID чата\\n/deals — лучшие находки\\n/stats — статистика\\n/sources — состояние подключённых источников\\n/scan — проверить подключённые источники\\n\\nРыночную цену бот оценивает автоматически по собранным аналогам; нужно минимум 3 сопоставимых предложения. Источники задаются в .env."
+                    answer = "Tech Deal Hunter готов.\n/id — показать ID чата\n/deals — лучшие находки\n/stats — статистика\n/sources — состояние подключённых источников\n/scan — проверить подключённые источники\n\nРыночную цену бот оценивает автоматически по собранным аналогам; нужно минимум 3 сопоставимых предложения. Источники задаются в .env."
                 elif command == "/id":
                     answer = f"ID этого чата: {chat_id}\nДобавьте его в TELEGRAM_CHAT_ID файла .env и перезапустите бота."
                 elif command == "/stats":
@@ -596,10 +596,10 @@ def run_telegram_poll(db: Database) -> None:
                     avito = env_list("AVITO_SEARCH_URLS")
                     stats = db.stats()
                     answer = (
-                        "Подключённые источники (настройка из .env):\\n"
-                        f"RSS/Atom: {len(rss)}\\n"
-                        f"Публичный поиск Avito: {len(avito)}\\n"
-                        f"Объявлений в базе: {stats['total']}\\n\\n"
+                        "Подключённые источники (настройка из .env):\n"
+                        f"RSS/Atom: {len(rss)}\n"
+                        f"Публичный поиск Avito: {len(avito)}\n"
+                        f"Объявлений в базе: {stats['total']}\n\n"
                         "Если источников 0, бот пока не может сам находить новые объявления. "
                         "Добавьте разрешённые URL в RSS_FEEDS или AVITO_SEARCH_URLS и перезапустите процесс."
                     )
