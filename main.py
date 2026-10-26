@@ -159,21 +159,59 @@ class Database:
         self.conn.commit()
         return True
 
-    def market_stats(self, model_key: str) -> tuple[int | None, int]:
+    def market_stats(self, model_key: str, exclude_url: str = "") -> tuple[int | None, int]:
+        """Estimate the market price from automatically collected listings plus optional imported comps.
+
+        At least three comparable observations are required. The current offer is excluded,
+        so a cheap listing cannot pull its own reference price down.
+        """
         if not model_key:
             return None, 0
-        rows = self.conn.execute(
+        comp_rows = self.conn.execute(
             "SELECT price FROM market_comps WHERE model_key=? AND price>0 ORDER BY observed_at DESC LIMIT 100",
             (model_key,),
         ).fetchall()
-        values = [int(r["price"]) for r in rows]
+        listing_rows = self.conn.execute(
+            "SELECT url, price FROM listings WHERE model_key=? AND price>0 AND url<>? ORDER BY created_at DESC LIMIT 100",
+            (model_key, exclude_url),
+        ).fetchall()
+        # Each URL contributes at most once through listings; imported comparisons remain usable.
+        values = [int(r["price"]) for r in comp_rows] + [int(r["price"]) for r in listing_rows]
         if len(values) < 3:
             return None, len(values)
         median = statistics.median(values)
+        # Remove extreme outliers such as suspiciously cheap broken devices or obvious price errors.
         clean = [p for p in values if median * 0.5 <= p <= median * 1.8]
         if len(clean) < 3:
             return None, len(values)
         return int(round(statistics.median(clean))), len(clean)
+
+    def refresh_model(self, model_key: str) -> None:
+        """Re-evaluate saved offers after new comparable listings arrive."""
+        if not model_key:
+            return
+        rows = self.conn.execute("SELECT * FROM listings WHERE model_key=?", (model_key,)).fetchall()
+        min_discount = float(os.getenv("MIN_DISCOUNT_PERCENT", "25"))
+        min_profit = safe_int_env("MIN_PROFIT_RUB", 1500)
+        max_risk = safe_int_env("MAX_RISK_SCORE", 40)
+        for item in rows:
+            row = dict(item)
+            market_price, samples = self.market_stats(model_key, exclude_url=row["url"])
+            discount = max(0.0, (market_price - row["price"]) / market_price * 100) if market_price else None
+            profit = int(round(market_price * (1 - row["commission_pct"] / 100) - row["price"] - row["delivery_cost"] - row["repair_cost"])) if market_price else None
+            if market_price is None or samples < 3:
+                status = "needs_market"
+            elif row["risk_score"] >= 60:
+                status = "risky"
+            elif discount is not None and discount >= min_discount and profit is not None and profit >= min_profit and row["risk_score"] <= max_risk:
+                status = "candidate"
+            else:
+                status = "not_enough_profit"
+            self.conn.execute(
+                "UPDATE listings SET market_price=?, market_samples=?, discount_pct=?, expected_profit=?, status=? WHERE url=?",
+                (market_price, samples, discount, profit, status, row["url"]),
+            )
+        self.conn.commit()
 
     def upsert_listing(self, raw: dict[str, Any], city_default: str = "") -> tuple[bool, dict[str, Any]]:
         url = str(raw.get("url") or raw.get("link") or "").strip()
@@ -183,7 +221,7 @@ class Database:
             return False, {"error": "Для объявления обязательны url, title и price"}
         model_key = str(raw.get("model_key") or normalize_model(title)).strip()
         key = hashlib.sha256(url.encode("utf-8")).hexdigest()
-        market_price, market_samples = self.market_stats(model_key)
+        market_price, market_samples = self.market_stats(model_key, exclude_url=url)
         manual_market = as_int(raw.get("market_price"))
         manual_samples = as_int(raw.get("market_samples"), 0) or 0
         if manual_market is not None and manual_samples >= 3:
@@ -248,6 +286,8 @@ class Database:
                expected_profit,risk_score,risk_notes,status,created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
         self.conn.commit()
+        # New observations automatically become comparable market data for other offers.
+        self.refresh_model(model_key)
         row = dict(self.conn.execute("SELECT * FROM listings WHERE url=?", (url,)).fetchone())
         return not exists, row
 
