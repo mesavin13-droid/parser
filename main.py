@@ -50,7 +50,9 @@ SCAM_RE = re.compile(
 STOP_WORDS = {
     "продам", "куплю", "срочно", "новый", "новая", "новое", "новые", "б/у", "бу",
     "идеальное", "состояние", "отличное", "рабочий", "рабочая", "оригинал",
-    "доставка", "самовывоз", "торг", "обмен", "цена", "руб", "рублей", "₽",
+    "доставка", "самовывоз", "торг", "обмен", "цена", "руб", "рублей", "₽", "не", "работает", "работал", "работала",
+    "запчасти", "запчасть", "разбит", "разбитый", "неисправен", "неисправна", "дефект", "донор",
+    "заблокирован", "заблокирована", "icloud", "айклауд", "утоплен", "утоплена",
 }
 
 
@@ -136,6 +138,7 @@ class Database:
           source TEXT DEFAULT '', observed_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_market_model ON market_comps(model_key);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_market_dedupe ON market_comps(model_key,title,price,city,source);
         CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status, notified);
         """)
         self.conn.commit()
@@ -150,7 +153,7 @@ class Database:
         if not title or not model_key or price is None or price < 0:
             return False
         self.conn.execute(
-            "INSERT INTO market_comps(model_key,title,price,city,source,observed_at) VALUES(?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO market_comps(model_key,title,price,city,source,observed_at) VALUES(?,?,?,?,?,?)",
             (model_key, title, price, str(row.get("city") or ""), str(row.get("source") or "manual"), now_iso()),
         )
         self.conn.commit()
