@@ -67,6 +67,23 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(row["status"], "candidate")
         self.assertEqual(row["expected_profit"], 6000)
 
+    def test_late_market_comps_refresh_existing_offer(self):
+        _, row = self.db.upsert_listing({
+            "url": "https://example.org/item/late-comps",
+            "title": "iPhone 13 128 GB",
+            "price": 5000,
+            "image_url": "https://example.org/image.jpg",
+        })
+        self.assertEqual(row["status"], "needs_market")
+        for price in (10000, 11000, 12000):
+            self.db.add_market({"title": "iPhone 13 128 GB", "price": price})
+        refreshed = self.db.conn.execute(
+            "SELECT * FROM listings WHERE url=?",
+            ("https://example.org/item/late-comps",),
+        ).fetchone()
+        self.assertEqual(refreshed["market_price"], 11000)
+        self.assertEqual(refreshed["status"], "candidate")
+
     def test_insufficient_market_comps_not_alerted(self):
         _, row = self.db.upsert_listing({
             "url": "https://example.org/item/2",
