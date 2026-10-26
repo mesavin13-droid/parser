@@ -157,6 +157,8 @@ class Database:
             (model_key, title, price, str(row.get("city") or ""), str(row.get("source") or "manual"), now_iso()),
         )
         self.conn.commit()
+        # Recalculate saved offers if comparisons arrive after them.
+        self.refresh_model(model_key)
         return True
 
     def market_stats(self, model_key: str, exclude_url: str = "") -> tuple[int | None, int]:
@@ -581,7 +583,7 @@ def run_telegram_poll(db: Database) -> None:
                     telegram_call("sendMessage", {"chat_id": chat_id, "text": "Бот настроен для другого чата."})
                     continue
                 if command in ("/start", "/help"):
-                    answer = "Tech Deal Hunter готов.\n/id — показать ID чата\n/deals — лучшие находки\n/stats — статистика\n/scan — проверить подключённые источники\n\nСначала внесите минимум 3 рыночные цены на модель через import-market."
+                    answer = "Tech Deal Hunter готов.\\n/id — показать ID чата\\n/deals — лучшие находки\\n/stats — статистика\\n/sources — состояние подключённых источников\\n/scan — проверить подключённые источники\\n\\nРыночную цену бот оценивает автоматически по собранным аналогам; нужно минимум 3 сопоставимых предложения. Источники задаются в .env."
                 elif command == "/id":
                     answer = f"ID этого чата: {chat_id}\nДобавьте его в TELEGRAM_CHAT_ID файла .env и перезапустите бота."
                 elif command == "/stats":
@@ -589,6 +591,18 @@ def run_telegram_poll(db: Database) -> None:
                 elif command == "/deals":
                     deals = db.deals(5)
                     answer = "\n\n".join(format_deal(d) for d in deals) if deals else "Пока нет находок, прошедших все фильтры."
+                elif command == "/sources":
+                    rss = env_list("RSS_FEEDS")
+                    avito = env_list("AVITO_SEARCH_URLS")
+                    stats = db.stats()
+                    answer = (
+                        "Подключённые источники (настройка из .env):\\n"
+                        f"RSS/Atom: {len(rss)}\\n"
+                        f"Публичный поиск Avito: {len(avito)}\\n"
+                        f"Объявлений в базе: {stats['total']}\\n\\n"
+                        "Если источников 0, бот пока не может сам находить новые объявления. "
+                        "Добавьте разрешённые URL в RSS_FEEDS или AVITO_SEARCH_URLS и перезапустите процесс."
+                    )
                 elif command == "/scan":
                     answer = "Запускаю проверку источников…"
                     telegram_call("sendMessage", {"chat_id": chat_id, "text": answer})
