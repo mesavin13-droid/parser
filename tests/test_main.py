@@ -46,6 +46,27 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(row["status"], "candidate")
         self.assertEqual(row["expected_profit"], 6000)
 
+    def test_market_price_is_learned_from_collected_listings(self):
+        offers = [
+            ("https://example.org/market/1", 10000),
+            ("https://example.org/market/2", 11000),
+            ("https://example.org/market/3", 12000),
+            ("https://example.org/deal/cheap", 5000),
+        ]
+        for url, price in offers:
+            _, row = self.db.upsert_listing({
+                "url": url,
+                "title": "Sony PlayStation 5 Slim",
+                "price": price,
+                "city": "Новосибирск",
+                "image_url": "https://example.org/image.jpg",
+            })
+        # The bot derives the reference price from other collected offers; no manual market import.
+        self.assertEqual(row["market_price"], 11000)
+        self.assertEqual(row["market_samples"], 3)
+        self.assertEqual(row["status"], "candidate")
+        self.assertEqual(row["expected_profit"], 6000)
+
     def test_insufficient_market_comps_not_alerted(self):
         _, row = self.db.upsert_listing({
             "url": "https://example.org/item/2",
