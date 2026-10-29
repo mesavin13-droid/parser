@@ -37,6 +37,15 @@ PRICE_RE = re.compile(
     r"(?<!\w)(\d[\d\s\u00a0]{0,12})\s*(?:₽|руб(?:\.|лей|ля|ль)?)(?!\w)", re.I
 )
 LABEL_PRICE_RE = re.compile(r"(?:цена|стоимость|price)\s*[:—-]?\s*(\d[\d\s\u00a0]{0,12})", re.I)
+COMPACT_CURRENCY_PRICE_RE = re.compile(
+    r"(?<!\w)(\d{1,3}(?:[.,]\d{1,2})?)\s*(тыс(?:\.|яч(?:а|и)?)?|к|k)\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.?)(?!\w)",
+    re.I,
+)
+COMPACT_LABEL_PRICE_RE = re.compile(
+    r"(?:цена|стоимость|price|за|отдам\s+за)\s*[:—-]?\s*"
+    r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(тыс(?:\.|яч(?:а|и)?)?|к|k)\b",
+    re.I,
+)
 BAD_RE = re.compile(
     r"на\s+запчаст|не\s+работает|не\s+включа|разбит|треснут|утоплен|после\s+воды|"
     r"заблокир|icloud|айклауд|аклауд|донор|дефект|неисправ",
@@ -144,11 +153,16 @@ def parse_price(text: str) -> int | None:
     if FREE_RE.search(text):
         return 0
     match = PRICE_RE.search(text)
-    if not match:
-        match = LABEL_PRICE_RE.search(text)
-    if not match:
-        return None
-    return as_int(match.group(1))
+    if match:
+        return as_int(match.group(1))
+    compact = COMPACT_CURRENCY_PRICE_RE.search(text) or COMPACT_LABEL_PRICE_RE.search(text)
+    if compact:
+        amount = float(compact.group(1).replace(",", "."))
+        unit = compact.group(2).lower()
+        multiplier = 1000 if unit.startswith("тыс") or unit in {"к", "k"} else 1
+        return int(round(amount * multiplier))
+    match = LABEL_PRICE_RE.search(text)
+    return as_int(match.group(1)) if match else None
 
 
 def normalize_model(title: str) -> str:
@@ -923,20 +937,24 @@ def run_telegram_poll(db: Database) -> None:
                     rss = env_list("RSS_FEEDS")
                     avito = env_list("AVITO_SEARCH_URLS")
                     telegram_channels = env_list("TELEGRAM_CHANNELS")
-                    configured = (
-                        [(url, "RSS/Atom") for url in rss]
-                        + [(url, "Avito") for url in avito]
-                        + [(telegram_channel_public_url(ch), "Telegram") for ch in telegram_channels]
-                    )
+                    configured = [(url, "RSS/Atom") for url in rss] + [(url, "Avito") for url in avito]
+                    invalid_channels = []
+                    for channel in telegram_channels:
+                        try:
+                            configured.append((telegram_channel_public_url(channel), "Telegram"))
+                        except ValueError:
+                            invalid_channels.append(channel)
                     checks = {item["url"]: item for item in db.source_status()}
                     stats = db.stats()
                     lines = [
                         "Источники поиска",
-                        f"Настроено: RSS/Atom — {len(rss)}, Avito — {len(avito)}",
+                        f"Настроено: RSS/Atom — {len(rss)}, Avito — {len(avito)}, Telegram — {len(telegram_channels)}",
                         f"Объявлений в базе: {stats['total']}",
                     ]
-                    if not configured:
-                        lines.append("⛔ Источники не настроены. Заполните RSS_FEEDS или AVITO_SEARCH_URLS в .env.")
+                    if not configured and not invalid_channels:
+                        lines.append("⛔ Источники не настроены. Заполните RSS_FEEDS, AVITO_SEARCH_URLS или TELEGRAM_CHANNELS в .env.")
+                    for channel in invalid_channels[:5]:
+                        lines.append(f"⛔ Неверная ссылка на публичный Telegram-канал: {channel}")
                     else:
                         lines.append("")
                         for url, source_type in configured[:12]:
@@ -969,6 +987,11 @@ def run_telegram_poll(db: Database) -> None:
                     added = ingest_sources(db, quiet=False)
                     stats = db.stats()
                     configured_urls = set(env_list("RSS_FEEDS") + env_list("AVITO_SEARCH_URLS"))
+                    for channel in env_list("TELEGRAM_CHANNELS"):
+                        try:
+                            configured_urls.add(telegram_channel_public_url(channel))
+                        except ValueError:
+                            pass
                     checks = [item for item in db.source_status() if item["url"] in configured_urls]
                     failed = sum(1 for item in checks if item["last_error"])
                     answer = (
