@@ -555,6 +555,7 @@ class TelegramPublicChannelParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.cards: list[dict[str, Any]] = []
+        self.posts_seen = 0
         self.card: dict[str, Any] | None = None
         self.depth = 0
         self.capture_tag: str | None = None
@@ -616,11 +617,20 @@ class TelegramPublicChannelParser(HTMLParser):
         if self.depth <= 0:
             body = self.card.get("description", "")
             if body and self.card.get("url"):
+                self.posts_seen += 1
                 lines = [line.strip() for line in body.splitlines() if line.strip()]
                 title = next(
                     (line for line in lines if not line.startswith(("http://", "https://"))
                      and re.search(r"[A-Za-zА-Яа-я0-9]", line)),
                     lines[0] if lines else "",
+                )
+                title = re.sub(
+                    r"\s*(?:[|—–-]\s*)?(?:(?:цена|стоимость|за|отдам\s+за)\s*[:—-]?\s*)?"
+                    r"(?:\d{1,3}(?:(?:[ \u00a0\u202f.,])\d{3}){0,2}|\d{4,9})"
+                    r"\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.?).*$",
+                    "",
+                    title,
+                    flags=re.I,
                 )
                 title = re.sub(
                     r"\s*(?:[|—–-]\s*)?(?:цена|стоимость|за|отдам\s+за)\s*[:—-]?\s*"
@@ -755,10 +765,10 @@ def fetch_telegram_channel(channel: str, city: str) -> list[dict[str, Any]]:
     page, _ = fetch_url(preview_url)
     parser = TelegramPublicChannelParser()
     parser.feed(page)
-    if not parser.cards:
+    if parser.posts_seen == 0:
         raise RuntimeError(
-            "В публичном просмотре Telegram не найдены посты с распознаваемой ценой. "
-            "Канал может быть недоступен для веб-просмотра или использовать другой формат публикаций."
+            "В публичном веб-просмотре Telegram не удалось прочитать публикации. "
+            "Канал может быть закрыт для веб-просмотра или иметь изменившуюся HTML-структуру."
         )
     for row in parser.cards:
         row["city"] = city
