@@ -512,8 +512,14 @@ def fetch_rss(url: str, city: str) -> list[dict[str, Any]]:
 
 def fetch_avito(url: str, city: str) -> list[dict[str, Any]]:
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https") or not (parsed.hostname or "").lower().endswith("avito.ru"):
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not (host == "avito.ru" or host.endswith(".avito.ru")):
         raise ValueError(f"Разрешены только ссылки на публичный поиск avito.ru: {url}")
+    # Some Avito search URLs can expose an RSS response via format=rss.
+    # Prefer the structured feed when explicitly requested; never bypass access controls.
+    query = urllib.parse.parse_qs(parsed.query)
+    if any(value.lower() == "rss" for value in query.get("format", [])):
+        return fetch_rss(url, city)
     text, _ = fetch_url(url)
     parser = AvitoHTMLParser(url)
     parser.feed(text)
