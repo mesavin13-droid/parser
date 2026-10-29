@@ -35,7 +35,9 @@ DEFAULT_DB = BASE_DIR / "data" / "deals.sqlite3"
 USER_AGENT = "TechDealHunter/1.0 (+personal price research; no CAPTCHA bypass)"
 FREE_RE = re.compile(r"\b(?:бесплатно|отдам\s+даром|даром|самовывоз\s+бесплатно)\b", re.I)
 PRICE_RE = re.compile(
-    r"(?<!\w)(\d[\d\s\u00a0]{0,12})\s*(?:₽|руб(?:\.|лей|ля|ль)?)(?!\w)", re.I
+    r"(?<!\w)(\d{1,3}(?:(?:[ \u00a0\u202f.,])\d{3}){0,2}|\d{4,9})"
+    r"\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.?)(?!\w)",
+    re.I,
 )
 LABEL_PRICE_RE = re.compile(r"(?:цена|стоимость|price)\s*[:—-]?\s*(\d[\d\s\u00a0]{0,12})", re.I)
 COMPACT_CURRENCY_PRICE_RE = re.compile(
