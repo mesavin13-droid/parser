@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +29,15 @@ class AnalyzerTests(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    def test_file_database_uses_wal_for_multiple_workers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Database(Path(folder) / "deals.sqlite3")
+            try:
+                mode = db.conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
+                self.assertEqual(mode, "wal")
+            finally:
+                db.close()
 
     def test_parse_price(self):
         self.assertEqual(parse_price("Цена 25 900 ₽"), 25900)
