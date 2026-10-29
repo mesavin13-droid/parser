@@ -497,7 +497,6 @@ class AvitoHTMLParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.base_url = base_url
         self.cards: list[dict[str, Any]] = []
-        self.posts_seen = 0
         self.card: dict[str, Any] | None = None
         self.depth = 0
         self.capture: str | None = None
@@ -556,6 +555,7 @@ class TelegramPublicChannelParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.cards: list[dict[str, Any]] = []
+        self.posts_seen = 0
         self.card: dict[str, Any] | None = None
         self.depth = 0
         self.capture_tag: str | None = None
