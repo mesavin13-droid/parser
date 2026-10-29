@@ -273,6 +273,20 @@ class AnalyzerTests(unittest.TestCase):
             datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc),
         )
 
+    def test_free_listing_is_alerted_without_market_comparables(self):
+        _, row = self.db.upsert_listing({
+            "url": "https://example.org/item/free-laptop",
+            "title": "Отдам даром ноутбук Lenovo",
+            "price": 0,
+            "image_url": "https://example.org/image.jpg",
+        })
+        self.assertEqual(row["status"], "candidate")
+        self.assertIsNone(row["market_price"])
+        self.assertIsNone(row["expected_profit"])
+        self.assertIn("бесплатное", row["risk_notes"])
+        self.assertEqual(len(self.db.pending_alerts()), 1)
+        self.assertIn("Цена: БЕСПЛАТНО", format_deal(row))
+
     def test_free_high_value_offer_gets_verification_warning(self):
         for price in (10000, 11000, 12000):
             self.db.add_market({"title": "iPhone 13 128 GB", "price": price})

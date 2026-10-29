@@ -348,10 +348,12 @@ class Database:
             profit = int(round(market_price * (1 - row["commission_pct"] / 100) - row["price"] - row["delivery_cost"] - row["repair_cost"])) if market_price else None
             if not listing_is_fresh(row):
                 status = "stale"
-            elif market_price is None or samples < 3:
-                status = "needs_market"
             elif row["risk_score"] >= 60:
                 status = "risky"
+            elif row["price"] == 0:
+                status = "candidate"
+            elif market_price is None or samples < 3:
+                status = "needs_market"
             elif discount is not None and discount >= min_discount and profit is not None and profit >= min_profit and row["risk_score"] <= max_risk:
                 status = "candidate"
             else:
@@ -396,9 +398,9 @@ class Database:
         if SCAM_RE.search(text):
             risk += 55
             notes.append("подозрительное требование оплаты или ссылка")
-        if market_price is not None and price == 0:
+        if price == 0:
             risk += 20
-            notes.append("объявление бесплатное: проверьте условия передачи и продавца")
+            notes.append("объявление указано как бесплатное: проверьте условия передачи и продавца")
         elif market_price and price > 0 and price < market_price * 0.45:
             risk += 25
             notes.append("аномально низкая цена: возможен дефект или обман")
@@ -409,10 +411,13 @@ class Database:
         min_discount = float(os.getenv("MIN_DISCOUNT_PERCENT", "25"))
         min_profit = safe_int_env("MIN_PROFIT_RUB", 1500)
         max_risk = safe_int_env("MAX_RISK_SCORE", 40)
-        if market_price is None or market_samples < 3:
-            status = "needs_market"
-        elif risk >= 60:
+        if risk >= 60:
             status = "risky"
+        elif price == 0:
+            # Free listings are useful even before three comparable market prices exist.
+            status = "candidate"
+        elif market_price is None or market_samples < 3:
+            status = "needs_market"
         elif discount is not None and discount >= min_discount and profit is not None and profit >= min_profit and risk <= max_risk:
             status = "candidate"
         else:
