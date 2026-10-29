@@ -200,6 +200,32 @@ class AnalyzerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             telegram_channel_public_url("@bad")
 
+    def test_telegram_post_title_drops_explicit_currency_price(self):
+        published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        page = f"""
+        <div class="tgme_widget_message" data-post="gadget_deals/124">
+          <div class="tgme_widget_message_text js-message_text">
+            🔥 Наушники Moondrop Pill за 3.319р. (вместо 3.572р.)
+          </div>
+          <a class="tgme_widget_message_date"><time datetime="{published}"></time></a>
+        </div>
+        """
+        with patch("main.fetch_url", return_value=(page, "text/html")):
+            rows = fetch_telegram_channel("@gadget_deals", "Новосибирск")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "🔥 Наушники Moondrop Pill")
+        self.assertEqual(rows[0]["price"], 3319)
+
+    def test_telegram_channel_without_price_posts_is_not_marked_as_access_error(self):
+        page = """
+        <div class="tgme_widget_message" data-post="gadget_deals/125">
+          <div class="tgme_widget_message_text js-message_text">Канал публикует обзор без цены</div>
+        </div>
+        """
+        with patch("main.fetch_url", return_value=(page, "text/html")):
+            rows = fetch_telegram_channel("@gadget_deals", "Новосибирск")
+        self.assertEqual(rows, [])
+
     def test_telegram_public_channel_parses_price_title_date_and_post_link(self):
         published = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
         page = f"""
