@@ -46,6 +46,32 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("must-not-be-shown", safe_source_label(url))
         self.assertEqual(safe_source_label(url), "example.org/feed.xml")
 
+    def test_scan_records_public_telegram_channel_health(self):
+        channel_posts = [{
+            "url": "https://t.me/gadget_deals/123",
+            "title": "iPhone 13 128 GB",
+            "price": 18000,
+            "description": "iPhone 13 128 GB — цена 18к",
+            "published_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+            "source": "telegram_channel",
+        }]
+        with patch.dict(os.environ, {
+            "RSS_FEEDS": "",
+            "AVITO_SEARCH_URLS": "",
+            "TELEGRAM_CHANNELS": "@gadget_deals",
+        }):
+            with patch("main.fetch_telegram_channel", return_value=channel_posts), \
+                 patch("main.send_telegram", return_value=False):
+                added = ingest_sources(self.db, quiet=True)
+
+        self.assertEqual(added, 1)
+        checks = self.db.source_status()
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0]["url"], "https://t.me/s/gadget_deals")
+        self.assertEqual(checks[0]["source_type"], "Telegram")
+        self.assertEqual(checks[0]["last_items"], 1)
+        self.assertEqual(checks[0]["last_error"], "")
+
     def test_scan_records_source_success_and_failure(self):
         feed_url = "https://example.org/feed.xml"
         avito_url = "https://www.avito.ru/novosibirsk/telefony"
