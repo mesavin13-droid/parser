@@ -1,8 +1,9 @@
 import os
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
-from main import Database, normalize_model, parse_datetime, parse_price
+from main import Database, fetch_avito, normalize_model, parse_datetime, parse_price
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -87,6 +88,17 @@ class AnalyzerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(refreshed["market_price"], 11000)
         self.assertEqual(refreshed["status"], "candidate")
+
+    def test_avito_rss_url_uses_rss_parser(self):
+        url = "https://www.avito.ru/novosibirsk/telefony?format=rss"
+        expected = [{"title": "iPhone", "price": 1000, "url": url}]
+        with patch("main.fetch_rss", return_value=expected) as parser:
+            self.assertEqual(fetch_avito(url, "Новосибирск"), expected)
+            parser.assert_called_once_with(url, "Новосибирск")
+
+    def test_avito_rejects_lookalike_domain(self):
+        with self.assertRaises(ValueError):
+            fetch_avito("https://notavito.ru/novosibirsk/telefony", "Новосибирск")
 
     def test_parse_datetime_supports_iso_rss_and_unix(self):
         self.assertEqual(
