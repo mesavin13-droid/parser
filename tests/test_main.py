@@ -1,18 +1,22 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 
-from main import Database, normalize_model, parse_price
+from main import Database, normalize_model, parse_datetime, parse_price
 
 
 class AnalyzerTests(unittest.TestCase):
     def setUp(self):
         self.old_env = {k: os.environ.get(k) for k in (
-            "MIN_DISCOUNT_PERCENT", "MIN_PROFIT_RUB", "MAX_RISK_SCORE", "DEFAULT_COMMISSION_PCT"
+            "MIN_DISCOUNT_PERCENT", "MIN_PROFIT_RUB", "MAX_RISK_SCORE", "DEFAULT_COMMISSION_PCT",
+            "MAX_LISTING_AGE_HOURS", "MAX_MARKET_DATA_AGE_DAYS"
         )}
         os.environ["MIN_DISCOUNT_PERCENT"] = "25"
         os.environ["MIN_PROFIT_RUB"] = "1500"
         os.environ["MAX_RISK_SCORE"] = "40"
         os.environ["DEFAULT_COMMISSION_PCT"] = "0"
+        os.environ["MAX_LISTING_AGE_HOURS"] = "72"
+        os.environ["MAX_MARKET_DATA_AGE_DAYS"] = "30"
         self.db = Database(":memory:")
 
     def tearDown(self):
@@ -83,6 +87,49 @@ class AnalyzerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(refreshed["market_price"], 11000)
         self.assertEqual(refreshed["status"], "candidate")
+
+    def test_parse_datetime_supports_iso_rss_and_unix(self):
+        self.assertEqual(
+            parse_datetime("2026-10-29T12:00:00Z"),
+            datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            parse_datetime("Thu, 29 Oct 2026 12:00:00 GMT"),
+            datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            parse_datetime("1793275200"),
+            datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+    def test_stale_listing_is_excluded_from_alerts_and_deals(self):
+        for price in (10000, 11000, 12000):
+            self.db.add_market({"title": "iPhone 13 128 GB", "price": price})
+        old_date = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        _, row = self.db.upsert_listing({
+            "url": "https://example.org/item/stale",
+            "title": "iPhone 13 128 GB",
+            "price": 5000,
+            "published_at": old_date,
+            "image_url": "https://example.org/image.jpg",
+        })
+        self.assertEqual(row["status"], "stale")
+        self.assertEqual(self.db.pending_alerts(), [])
+        self.assertEqual(self.db.deals(), [])
+        self.assertEqual(self.db.stats()["stale"], 1)
+
+    def test_old_market_snapshots_are_not_used(self):
+        for price in (10000, 11000, 12000):
+            self.db.add_market({"title": "iPhone 13 128 GB", "price": price})
+        old_date = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+        self.db.conn.execute(
+            "UPDATE market_comps SET observed_at=? WHERE price=12000",
+            (old_date,),
+        )
+        self.db.conn.commit()
+        market_price, samples = self.db.market_stats("iphone 13 128 gb")
+        self.assertIsNone(market_price)
+        self.assertEqual(samples, 2)
 
     def test_insufficient_market_comps_not_alerted(self):
         _, row = self.db.upsert_listing({
