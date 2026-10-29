@@ -89,6 +89,15 @@ class AnalyzerTests(unittest.TestCase):
     def test_normalize_model(self):
         self.assertEqual(normalize_model("Продам iPhone 13 128 GB, срочно"), "iphone 13 128 gb")
 
+    def test_normalize_model_compact_names_and_free_listing_phrases(self):
+        expected = "iphone 13 128 gb"
+        self.assertEqual(normalize_model("Продам iPhone13 128GB, срочно"), expected)
+        self.assertEqual(normalize_model("Отдам даром iPhone 13 128 GB"), expected)
+        self.assertEqual(normalize_model("iPhone 13 128 GB бесплатно"), expected)
+        self.assertEqual(normalize_model("NVIDIA GeForce RTX3060Ti"), "rtx 3060 ti")
+        self.assertEqual(normalize_model("PlayStation5 Slim"), "ps5 slim")
+        self.assertEqual(normalize_model("Sony PS 5 Slim"), "ps5 slim")
+
     def test_market_median_and_candidate(self):
         for price in (10000, 11000, 12000):
             self.db.add_market({"title": "iPhone 13 128 GB", "price": price, "city": "Новосибирск"})
