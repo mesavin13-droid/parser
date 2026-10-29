@@ -114,6 +114,20 @@ class AnalyzerTests(unittest.TestCase):
             datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc),
         )
 
+    def test_free_high_value_offer_gets_verification_warning(self):
+        for price in (10000, 11000, 12000):
+            self.db.add_market({"title": "iPhone 13 128 GB", "price": price})
+        _, row = self.db.upsert_listing({
+            "url": "https://example.org/item/free-phone",
+            "title": "iPhone 13 128 GB отдам даром",
+            "model_key": "iphone 13 128 gb",
+            "price": 0,
+            "image_url": "https://example.org/image.jpg",
+        })
+        self.assertEqual(row["status"], "candidate")
+        self.assertEqual(row["risk_score"], 20)
+        self.assertIn("бесплатное", row["risk_notes"])
+
     def test_stale_listing_is_excluded_from_alerts_and_deals(self):
         for price in (10000, 11000, 12000):
             self.db.add_market({"title": "iPhone 13 128 GB", "price": price})
