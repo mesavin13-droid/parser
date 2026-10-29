@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
-from main import Database, fetch_avito, format_deal, normalize_model, parse_datetime, parse_price, safe_source_label
+from main import Database, fetch_avito, format_deal, ingest_sources, normalize_model, parse_datetime, parse_price, safe_source_label
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -45,6 +45,32 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(second["last_error"], "HTTP 403")
         self.assertNotIn("must-not-be-shown", safe_source_label(url))
         self.assertEqual(safe_source_label(url), "example.org/feed.xml")
+
+    def test_scan_records_source_success_and_failure(self):
+        feed_url = "https://example.org/feed.xml"
+        avito_url = "https://www.avito.ru/novosibirsk/telefony"
+        feed_items = [{
+            "url": "https://example.org/item/1",
+            "title": "iPhone 13 128 GB",
+            "price": 20000,
+            "image_url": "https://example.org/image.jpg",
+            "source": "rss",
+        }]
+        with patch.dict(os.environ, {
+            "RSS_FEEDS": feed_url,
+            "AVITO_SEARCH_URLS": avito_url,
+        }):
+            with patch("main.fetch_rss", return_value=feed_items), \
+                 patch("main.fetch_avito", side_effect=RuntimeError("HTTP 403")), \
+                 patch("main.send_telegram", return_value=False):
+                added = ingest_sources(self.db, quiet=True)
+
+        self.assertEqual(added, 1)
+        checks = {item["url"]: item for item in self.db.source_status()}
+        self.assertEqual(checks[feed_url]["last_items"], 1)
+        self.assertTrue(checks[feed_url]["last_success_at"])
+        self.assertEqual(checks[feed_url]["last_error"], "")
+        self.assertIn("HTTP 403", checks[avito_url]["last_error"])
 
     def test_file_database_uses_wal_for_multiple_workers(self):
         with tempfile.TemporaryDirectory() as folder:
