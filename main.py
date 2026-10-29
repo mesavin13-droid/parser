@@ -83,7 +83,7 @@ def parse_datetime(value: Any) -> datetime | None:
     raw = str(value or "").strip()
     if not raw:
         return None
-    if re.fullmatch(r"\\d{10,13}", raw):
+    if re.fullmatch(r"\d{10,13}", raw):
         try:
             timestamp = float(raw)
             if timestamp >= 1_000_000_000_000:
