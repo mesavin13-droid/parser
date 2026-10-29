@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
-from main import Database, fetch_avito, format_deal, normalize_model, parse_datetime, parse_price
+from main import Database, fetch_avito, format_deal, normalize_model, parse_datetime, parse_price, safe_source_label
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -29,6 +29,22 @@ class AnalyzerTests(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    def test_source_status_preserves_last_success_after_failure(self):
+        url = "https://example.org/feed.xml?token=must-not-be-shown"
+        self.db.record_source_check(url, "RSS/Atom", item_count=7)
+        first = self.db.source_status()[0]
+        self.assertEqual(first["last_items"], 7)
+        self.assertTrue(first["last_success_at"])
+        self.assertEqual(first["last_error"], "")
+
+        self.db.record_source_check(url, "RSS/Atom", error="HTTP 403")
+        second = self.db.source_status()[0]
+        self.assertEqual(second["last_items"], 7)
+        self.assertEqual(second["last_success_at"], first["last_success_at"])
+        self.assertEqual(second["last_error"], "HTTP 403")
+        self.assertNotIn("must-not-be-shown", safe_source_label(url))
+        self.assertEqual(safe_source_label(url), "example.org/feed.xml")
 
     def test_file_database_uses_wal_for_multiple_workers(self):
         with tempfile.TemporaryDirectory() as folder:
