@@ -197,6 +197,11 @@ class Database:
         CREATE INDEX IF NOT EXISTS idx_market_model ON market_comps(model_key);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_market_dedupe ON market_comps(model_key,title,price,city,source);
         CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status, notified);
+        CREATE TABLE IF NOT EXISTS source_status (
+          url TEXT PRIMARY KEY, source_type TEXT NOT NULL,
+          last_checked_at TEXT NOT NULL, last_success_at TEXT NOT NULL DEFAULT '',
+          last_items INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT ''
+        );
         """)
         # Upgrade databases created by earlier versions without deleting existing data.
         listing_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(listings)")}
@@ -207,6 +212,42 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+    def record_source_check(
+        self, url: str, source_type: str, item_count: int = 0, error: str = ""
+    ) -> None:
+        """Persist latest source result without erasing last successful data on errors."""
+        checked = now_iso()
+        if error:
+            self.conn.execute(
+                """INSERT INTO source_status(url, source_type, last_checked_at, last_error)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(url) DO UPDATE SET
+                     source_type=excluded.source_type,
+                     last_checked_at=excluded.last_checked_at,
+                     last_error=excluded.last_error""",
+                (url, source_type, checked, error[:500]),
+            )
+        else:
+            self.conn.execute(
+                """INSERT INTO source_status(
+                     url, source_type, last_checked_at, last_success_at, last_items, last_error
+                   ) VALUES(?,?,?,?,?, '')
+                   ON CONFLICT(url) DO UPDATE SET
+                     source_type=excluded.source_type,
+                     last_checked_at=excluded.last_checked_at,
+                     last_success_at=excluded.last_success_at,
+                     last_items=excluded.last_items,
+                     last_error=''""",
+                (url, source_type, checked, checked, max(0, int(item_count))),
+            )
+        self.conn.commit()
+
+    def source_status(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM source_status ORDER BY source_type, url"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_market(self, row: dict[str, Any]) -> bool:
         title = str(row.get("title") or row.get("model") or "").strip()
@@ -488,6 +529,13 @@ def fetch_url(url: str, timeout: int = 20) -> tuple[str, str]:
     return text, response.headers.get("Content-Type", "")
 
 
+def safe_source_label(url: str) -> str:
+    """Show a source location without query parameters that might contain credentials."""
+    parsed = urllib.parse.urlsplit(url)
+    path = parsed.path or "/"
+    return f"{parsed.hostname or 'unknown'}{path}"
+
+
 def fetch_rss(url: str, city: str) -> list[dict[str, Any]]:
     xml, _ = fetch_url(url)
     root = ET.fromstring(xml)
@@ -604,24 +652,32 @@ def ingest_sources(db: Database, quiet: bool = False) -> int:
     city = os.getenv("SEARCH_CITY", "Новосибирск")
     items: list[dict[str, Any]] = []
     failures = 0
-    for url in env_list("RSS_FEEDS"):
+    rss_urls = env_list("RSS_FEEDS")
+    avito_urls = env_list("AVITO_SEARCH_URLS")
+    for url in rss_urls:
         try:
             batch = fetch_rss(url, city)
             items.extend(batch)
+            db.record_source_check(url, "RSS/Atom", len(batch))
             if not quiet:
-                print(f"RSS: {len(batch)} объявлений — {url}")
+                print(f"RSS: {len(batch)} объявлений — {safe_source_label(url)}")
         except Exception as e:
             failures += 1
-            print(f"RSS ERROR {url}: {e}", file=sys.stderr)
-    for url in env_list("AVITO_SEARCH_URLS"):
+            db.record_source_check(url, "RSS/Atom", error=str(e))
+            print(f"RSS ERROR {safe_source_label(url)}: {e}", file=sys.stderr)
+    for url in avito_urls:
         try:
             batch = fetch_avito(url, city)
             items.extend(batch)
+            db.record_source_check(url, "Avito", len(batch))
             if not quiet:
-                print(f"Avito HTML: {len(batch)} объявлений — {url}")
+                print(f"Avito: {len(batch)} объявлений — {safe_source_label(url)}")
         except Exception as e:
             failures += 1
-            print(f"AVITO ERROR {url}: {e}", file=sys.stderr)
+            db.record_source_check(url, "Avito", error=str(e))
+            print(f"AVITO ERROR {safe_source_label(url)}: {e}", file=sys.stderr)
+    if not rss_urls and not avito_urls and not quiet:
+        print("Источники не настроены: добавьте RSS_FEEDS или AVITO_SEARCH_URLS в .env.", file=sys.stderr)
     added = 0
     for item in items:
         item.setdefault("source", "feed")
@@ -698,19 +754,47 @@ def run_telegram_poll(db: Database) -> None:
                     rss = env_list("RSS_FEEDS")
                     avito = env_list("AVITO_SEARCH_URLS")
                     stats = db.stats()
-                    answer = (
-                        "Подключённые источники (настройка из .env):\n"
-                        f"RSS/Atom: {len(rss)}\n"
-                        f"Публичный поиск Avito: {len(avito)}\n"
-                        f"Объявлений в базе: {stats['total']}\n\n"
-                        "Если источников 0, бот пока не может сам находить новые объявления. "
-                        "Добавьте разрешённые URL в RSS_FEEDS или AVITO_SEARCH_URLS и перезапустите процесс."
-                    )
+                    checks = db.source_status()
+                    lines = [
+                        "Источники поиска",
+                        f"Настроено: RSS/Atom — {len(rss)}, Avito — {len(avito)}",
+                        f"Объявлений в базе: {stats['total']}",
+                    ]
+                    if not rss and not avito:
+                        lines.append("⛔ Источники не настроены. Заполните RSS_FEEDS или AVITO_SEARCH_URLS в .env.")
+                    elif not checks:
+                        lines.append("Ещё не проверялись. Отправьте /scan.")
+                    else:
+                        lines.append("")
+                        for item in checks[:12]:
+                            label = safe_source_label(item["url"])
+                            if item["last_error"]:
+                                state = "⚠️ ошибка"
+                                detail = item["last_error"]
+                            elif item["last_success_at"]:
+                                state = "✅ доступен"
+                                detail = f"получено карточек: {item['last_items']}"
+                            else:
+                                state = "⏳ ещё не проверен"
+                                detail = "результат пока отсутствует"
+                            last = item["last_checked_at"] or "нет данных"
+                            lines.append(f"{state} {item['source_type']}: {label}")
+                            lines.append(f"Проверка: {last} · {detail[:180]}")
+                    answer = "\n".join(lines)
                 elif command == "/scan":
                     answer = "Запускаю проверку источников…"
                     telegram_call("sendMessage", {"chat_id": chat_id, "text": answer})
                     ingest_sources(db, quiet=False)
-                    answer = "Проверка завершена. /deals — показать подходящие предложения."
+                    stats = db.stats()
+                    checks = db.source_status()
+                    failed = sum(1 for item in checks if item["last_error"])
+                    answer = (
+                        "Проверка завершена.\n"
+                        f"Проверено источников: {len(checks)}\n"
+                        f"Источники с ошибками: {failed}\n"
+                        f"Новых выгодных находок в базе: {stats['candidates']}\n"
+                        "Команды: /deals — показать находки, /sources — подробности по источникам."
+                    )
                 else:
                     answer = "Неизвестная команда. Используйте /help."
                 telegram_call("sendMessage", {"chat_id": chat_id, "text": answer[:3900], "disable_web_page_preview": "true"})
