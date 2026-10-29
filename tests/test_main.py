@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
-from main import Database, fetch_avito, format_deal, ingest_sources, normalize_model, parse_datetime, parse_price, safe_source_label
+from main import Database, fetch_avito, fetch_telegram_channel, format_deal, ingest_sources, normalize_model, parse_datetime, parse_price, safe_source_label, telegram_channel_public_url
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -150,6 +150,48 @@ class AnalyzerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(refreshed["market_price"], 11000)
         self.assertEqual(refreshed["status"], "candidate")
+
+    def test_compact_price_formats(self):
+        self.assertEqual(parse_price("Цена 25к"), 25000)
+        self.assertEqual(parse_price("За 18,5 тыс."), 18500)
+        self.assertEqual(parse_price("Цена 12 000 ₽"), 12000)
+        self.assertIsNone(parse_price("Телевизор с экраном 4K 144 Гц"))
+
+    def test_telegram_channel_url_normalization_and_validation(self):
+        self.assertEqual(
+            telegram_channel_public_url("@gadget_deals"),
+            "https://t.me/s/gadget_deals",
+        )
+        self.assertEqual(
+            telegram_channel_public_url("https://t.me/s/gadget_deals"),
+            "https://t.me/s/gadget_deals",
+        )
+        with self.assertRaises(ValueError):
+            telegram_channel_public_url("https://nottelegram.me/s/gadget_deals")
+        with self.assertRaises(ValueError):
+            telegram_channel_public_url("@bad")
+
+    def test_telegram_public_channel_parses_price_title_date_and_post_link(self):
+        published = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        page = f"""
+        <div class="tgme_widget_message" data-post="gadget_deals/123">
+          <div class="tgme_widget_message_text js-message_text" dir="auto">
+            🔥 iPhone 13 128 GB — цена 18к<br/>Состояние отличное
+          </div>
+          <a class="tgme_widget_message_date" href="https://t.me/gadget_deals/123">
+            <time datetime="{published}">2 hours ago</time>
+          </a>
+        </div>
+        """
+        with patch("main.fetch_url", return_value=(page, "text/html")):
+            rows = fetch_telegram_channel("@gadget_deals", "Новосибирск")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["url"], "https://t.me/gadget_deals/123")
+        self.assertEqual(rows[0]["title"], "🔥 iPhone 13 128 GB")
+        self.assertEqual(rows[0]["price"], 18000)
+        self.assertEqual(rows[0]["city"], "Новосибирск")
+        self.assertEqual(rows[0]["published_at"], published)
+        self.assertEqual(rows[0]["source"], "telegram_channel")
 
     def test_avito_rss_url_uses_rss_parser(self):
         url = "https://www.avito.ru/novosibirsk/telefony?format=rss"
