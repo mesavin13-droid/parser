@@ -33,7 +33,11 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB = BASE_DIR / "data" / "deals.sqlite3"
 USER_AGENT = "TechDealHunter/1.0 (+personal price research; no CAPTCHA bypass)"
-FREE_RE = re.compile(r"\b(?:бесплатно|отдам\s+даром|даром|самовывоз\s+бесплатно)\b", re.I)
+FREE_RE = re.compile(
+    r"\b(?:бесплатно|отдам\s+даром|отдам\s+безвозмездно|безвозмездно|"
+    r"подарю|даром|за\s+спасибо|самовывоз\s+бесплатно)\b",
+    re.I,
+)
 PRICE_RE = re.compile(
     r"(?<!\w)(\d{1,3}(?:(?:[ \u00a0\u202f.,])\d{3}){0,2}|\d{4,9})"
     r"\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.?)(?!\w)",
@@ -625,8 +629,12 @@ class TelegramPublicChannelParser(HTMLParser):
                 self.posts_seen += 1
                 lines = [line.strip() for line in body.splitlines() if line.strip()]
                 title = next(
-                    (line for line in lines if not line.startswith(("http://", "https://"))
-                     and re.search(r"[A-Za-zА-Яа-я0-9]", line)),
+                    (
+                        line for line in lines
+                        if not line.startswith(("http://", "https://"))
+                        and re.search(r"[A-Za-zА-Яа-я0-9]", line)
+                        and not re.fullmatch(r"(?:\W*#[\w_]+\W*)+", line)
+                    ),
                     lines[0] if lines else "",
                 )
                 title = re.sub(
