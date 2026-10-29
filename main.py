@@ -553,7 +553,7 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def format_deal(row: dict[str, Any]) -> str:
-    price = f'{row["price"]:,}'.replace(",", " ") + " ₽"
+    price = "БЕСПЛАТНО" if row["price"] == 0 else f'{row["price"]:,}'.replace(",", " ") + " ₽"
     market = f'{row["market_price"]:,}'.replace(",", " ") + " ₽" if row.get("market_price") else "недостаточно аналогов"
     profit = f'{row["expected_profit"]:,}'.replace(",", " ") + " ₽" if row.get("expected_profit") is not None else "не рассчитана"
     discount = f'{row["discount_pct"]:.0f}%' if row.get("discount_pct") is not None else "—"
