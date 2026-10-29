@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Tech Deal Hunter: поиск потенциально выгодных товаров и Telegram-уведомления.
 
-Источники подключаются явно через RSS_FEEDS и AVITO_SEARCH_URLS либо импортом
-CSV/JSON. Защита площадок не обходится: при CAPTCHA/ограничении запросов источник
+Источники подключаются явно через RSS_FEEDS, AVITO_SEARCH_URLS и TELEGRAM_CHANNELS
+либо импортом CSV/JSON. Читаются только публичные страницы; защита площадок
+не обходится: при CAPTCHA/ограничении запросов источник
 останавливается и требует ручной проверки.
 """
 from __future__ import annotations
@@ -619,6 +620,14 @@ class TelegramPublicChannelParser(HTMLParser):
                      and re.search(r"[A-Za-zА-Яа-я0-9]", line)),
                     lines[0] if lines else "",
                 )
+                title = re.sub(
+                    r"\s*(?:[|—–-]\s*)?(?:цена|стоимость|за|отдам\s+за)\s*[:—-]?\s*"
+                    r"\d{1,3}(?:[.,]\d{1,2})?\s*(?:тыс(?:\.|яч(?:а|и)?)?|к|k)"
+                    r"(?:\s*(?:₽|руб(?:\.|лей|ля|ль)?))?.*$",
+                    "",
+                    title,
+                    flags=re.I,
+                ).strip(" —–-:|")
                 price = parse_price(body)
                 if title and price is not None:
                     self.cards.append({
