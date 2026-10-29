@@ -530,6 +530,98 @@ class AvitoHTMLParser(HTMLParser):
             self.depth = 0
 
 
+
+class TelegramPublicChannelParser(HTMLParser):
+    """Read public t.me/s channel previews only; no account or private-channel access."""
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.cards: list[dict[str, Any]] = []
+        self.card: dict[str, Any] | None = None
+        self.depth = 0
+        self.capture_tag: str | None = None
+        self.capture_depth = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        a = dict(attrs)
+        classes = set((a.get("class") or "").split())
+        if self.card is None:
+            post = (a.get("data-post") or "").strip("/")
+            if tag == "div" and "tgme_widget_message" in classes and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}/\d+", post):
+                self.card = {
+                    "url": "https://t.me/" + post,
+                    "published_at": "",
+                    "description": "",
+                }
+                self.depth = 1
+            return
+
+        if tag not in self.VOID:
+            self.depth += 1
+
+        if tag == "time" and a.get("datetime") and not self.card["published_at"]:
+            self.card["published_at"] = a["datetime"]
+
+        if self.capture_tag:
+            if tag not in self.VOID:
+                self.capture_depth += 1
+            if tag == "br":
+                self.parts.append("\n")
+        elif "tgme_widget_message_text" in classes:
+            self.capture_tag = tag
+            self.capture_depth = 1
+            self.parts = []
+
+    def handle_data(self, data):
+        if self.card is not None and self.capture_tag:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag: str):
+        if self.card is None:
+            return
+
+        if self.capture_tag and tag not in self.VOID:
+            self.capture_depth -= 1
+            if self.capture_depth <= 0:
+                body = "".join(self.parts).replace("\xa0", " ")
+                self.card["description"] = "\n".join(
+                    line.strip() for line in body.splitlines() if line.strip()
+                )
+                self.capture_tag = None
+                self.capture_depth = 0
+                self.parts = []
+
+        if tag not in self.VOID:
+            self.depth -= 1
+
+        if self.depth <= 0:
+            body = self.card.get("description", "")
+            if body and self.card.get("url"):
+                lines = [line.strip() for line in body.splitlines() if line.strip()]
+                title = next(
+                    (line for line in lines if not line.startswith(("http://", "https://"))
+                     and re.search(r"[A-Za-zА-Яа-я0-9]", line)),
+                    lines[0] if lines else "",
+                )
+                price = parse_price(body)
+                if title and price is not None:
+                    self.cards.append({
+                        "url": self.card["url"],
+                        "title": title[:180],
+                        "price": price,
+                        "description": body[:3000],
+                        "published_at": self.card.get("published_at", ""),
+                        "source": "telegram_channel",
+                    })
+            self.card = None
+            self.depth = 0
+            self.capture_tag = None
+            self.capture_depth = 0
+            self.parts = []
+
+
 def fetch_url(url: str, timeout: int = 20) -> tuple[str, str]:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/rss+xml,application/atom+xml,*/*"})
     try:
@@ -607,6 +699,47 @@ def fetch_avito(url: str, city: str) -> list[dict[str, Any]]:
     return out
 
 
+
+def telegram_channel_public_url(value: str) -> str:
+    """Normalize a public Telegram channel name/link into its public preview URL."""
+    raw = (value or "").strip()
+    if raw.startswith("@"):
+        username = raw[1:]
+    elif "://" in raw:
+        parsed = urllib.parse.urlsplit(raw)
+        host = (parsed.hostname or "").lower()
+        if host not in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}:
+            raise ValueError("Разрешены только публичные ссылки t.me или telegram.me")
+        parts = [part for part in parsed.path.split("/") if part]
+        if parts and parts[0].lower() == "s":
+            parts = parts[1:]
+        if not parts:
+            raise ValueError("В ссылке не указано имя Telegram-канала")
+        username = parts[0]
+    else:
+        username = raw
+
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username):
+        raise ValueError("Имя публичного Telegram-канала должно содержать 5–32 латинских символа, цифры или _")
+    return f"https://t.me/s/{username}"
+
+
+def fetch_telegram_channel(channel: str, city: str) -> list[dict[str, Any]]:
+    """Fetch price-bearing posts from Telegram's public web preview."""
+    preview_url = telegram_channel_public_url(channel)
+    page, _ = fetch_url(preview_url)
+    parser = TelegramPublicChannelParser()
+    parser.feed(page)
+    if not parser.cards:
+        raise RuntimeError(
+            "В публичном просмотре Telegram не найдены посты с распознаваемой ценой. "
+            "Канал может быть недоступен для веб-просмотра или использовать другой формат публикаций."
+        )
+    for row in parser.cards:
+        row["city"] = city
+    return parser.cards
+
+
 def load_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -672,6 +805,7 @@ def ingest_sources(db: Database, quiet: bool = False) -> int:
     failures = 0
     rss_urls = env_list("RSS_FEEDS")
     avito_urls = env_list("AVITO_SEARCH_URLS")
+    telegram_channels = env_list("TELEGRAM_CHANNELS")
     for url in rss_urls:
         try:
             batch = fetch_rss(url, city)
@@ -694,8 +828,25 @@ def ingest_sources(db: Database, quiet: bool = False) -> int:
             failures += 1
             db.record_source_check(url, "Avito", error=str(e))
             print(f"AVITO ERROR {safe_source_label(url)}: {e}", file=sys.stderr)
-    if not rss_urls and not avito_urls and not quiet:
-        print("Источники не настроены: добавьте RSS_FEEDS или AVITO_SEARCH_URLS в .env.", file=sys.stderr)
+    for channel in telegram_channels:
+        try:
+            preview_url = telegram_channel_public_url(channel)
+            batch = fetch_telegram_channel(channel, city)
+            items.extend(batch)
+            db.record_source_check(preview_url, "Telegram", len(batch))
+            if not quiet:
+                print(f"Telegram: {len(batch)} публикаций с ценой — {safe_source_label(preview_url)}")
+        except Exception as e:
+            failures += 1
+            try:
+                status_url = telegram_channel_public_url(channel)
+            except ValueError:
+                status_url = str(channel)
+            db.record_source_check(status_url, "Telegram", error=str(e))
+            print(f"TELEGRAM SOURCE ERROR {safe_source_label(status_url)}: {e}", file=sys.stderr)
+
+    if not rss_urls and not avito_urls and not telegram_channels and not quiet:
+        print("Источники не настроены: добавьте RSS_FEEDS, AVITO_SEARCH_URLS или TELEGRAM_CHANNELS в .env.", file=sys.stderr)
     added = 0
     for item in items:
         item.setdefault("source", "feed")
@@ -760,7 +911,7 @@ def run_telegram_poll(db: Database) -> None:
                     telegram_call("sendMessage", {"chat_id": chat_id, "text": "Бот настроен для другого чата."})
                     continue
                 if command in ("/start", "/help"):
-                    answer = "Tech Deal Hunter готов.\n/id — показать ID чата\n/deals — лучшие находки\n/stats — статистика\n/sources — состояние подключённых источников\n/scan — проверить подключённые источники\n\nРыночную цену бот оценивает автоматически по собранным аналогам; нужно минимум 3 сопоставимых предложения. Источники задаются в .env."
+                    answer = "Tech Deal Hunter готов.\n/id — показать ID чата\n/deals — лучшие находки\n/stats — статистика\n/sources — состояние подключённых источников\n/scan — проверить подключённые источники\n\nРыночную цену бот оценивает автоматически по собранным аналогам; нужно минимум 3 сопоставимых предложения. Источники: RSS/Atom, публичный поиск Avito и публичные Telegram-каналы из TELEGRAM_CHANNELS."
                 elif command == "/id":
                     answer = f"ID этого чата: {chat_id}\nДобавьте его в TELEGRAM_CHAT_ID файла .env и перезапустите бота."
                 elif command == "/stats":
@@ -771,7 +922,12 @@ def run_telegram_poll(db: Database) -> None:
                 elif command == "/sources":
                     rss = env_list("RSS_FEEDS")
                     avito = env_list("AVITO_SEARCH_URLS")
-                    configured = [(url, "RSS/Atom") for url in rss] + [(url, "Avito") for url in avito]
+                    telegram_channels = env_list("TELEGRAM_CHANNELS")
+                    configured = (
+                        [(url, "RSS/Atom") for url in rss]
+                        + [(url, "Avito") for url in avito]
+                        + [(telegram_channel_public_url(ch), "Telegram") for ch in telegram_channels]
+                    )
                     checks = {item["url"]: item for item in db.source_status()}
                     stats = db.stats()
                     lines = [
