@@ -226,6 +226,28 @@ class AnalyzerTests(unittest.TestCase):
             rows = fetch_telegram_channel("@gadget_deals", "Новосибирск")
         self.assertEqual(rows, [])
 
+    def test_telegram_ignores_hashtag_heading_and_extracts_product_title(self):
+        published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        page = f"""
+        <div class="tgme_widget_message" data-post="gadget_deals/126">
+          <div class="tgme_widget_message_text js-message_text">
+            #OZON 🇷🇺<br/>🔹 Робот-пылесос Ecovacs Deebot T90 Pro Omni за 39990₽ ❗️ (везде: 60000+₽)<br/>Отличная цена
+          </div>
+          <a class="tgme_widget_message_date"><time datetime="{published}"></time></a>
+        </div>
+        """
+        with patch("main.fetch_url", return_value=(page, "text/html")):
+            rows = fetch_telegram_channel("@gadget_deals", "Новосибирск")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "🔹 Робот-пылесос Ecovacs Deebot T90 Pro Omni")
+        self.assertEqual(rows[0]["price"], 39990)
+        self.assertNotEqual(normalize_model(rows[0]["title"]), "ozon")
+
+    def test_more_free_offer_phrases(self):
+        self.assertEqual(parse_price("Подарю ноутбук Lenovo"), 0)
+        self.assertEqual(parse_price("Отдам безвозмездно монитор"), 0)
+        self.assertEqual(parse_price("Ноутбук с мышкой в подарок — цена 25 000 ₽"), 25000)
+
     def test_telegram_public_channel_parses_price_title_date_and_post_link(self):
         published = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
         page = f"""
