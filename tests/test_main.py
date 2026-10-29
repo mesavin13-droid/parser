@@ -181,6 +181,9 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(parse_price("Цена 25к"), 25000)
         self.assertEqual(parse_price("За 18,5 тыс."), 18500)
         self.assertEqual(parse_price("Цена 12 000 ₽"), 12000)
+        self.assertEqual(parse_price("Сейчас всего за 3.319р. (3.572р.)"), 3319)
+        self.assertEqual(parse_price("Смартфон за 49.669р."), 49669)
+        self.assertEqual(parse_price("Цена 39990₽"), 39990)
         self.assertIsNone(parse_price("Телевизор с экраном 4K 144 Гц"))
 
     def test_telegram_channel_url_normalization_and_validation(self):
