@@ -169,7 +169,12 @@ class Database:
         self.path = Path(path or os.getenv("DEAL_DB_PATH", str(DEFAULT_DB)))
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        # The watcher and Telegram command loop may access the same file-backed DB.
+        # WAL plus a longer busy timeout reduces transient "database is locked" errors.
+        self.conn = sqlite3.connect(str(self.path), timeout=30)
+        self.conn.execute("PRAGMA busy_timeout=30000")
+        if str(self.path) != ":memory:":
+            self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript("""
         CREATE TABLE IF NOT EXISTS listings (
