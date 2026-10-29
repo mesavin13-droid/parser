@@ -611,17 +611,20 @@ def ingest_sources(db: Database, quiet: bool = False) -> int:
     added = 0
     for item in items:
         item.setdefault("source", "feed")
-        is_new, row = db.upsert_listing(item, city)
+        is_new, _row = db.upsert_listing(item, city)
         added += int(is_new)
-        if row["status"] == "candidate" and not row["notified"]:
-            message = format_deal(row)
-            try:
-                if send_telegram(message):
-                    db.mark_notified(row["url"])
-            except Exception as e:
-                print(f"Telegram ERROR: {e}", file=sys.stderr)
-            if not quiet:
-                print("\n" + message + "\n")
+
+    # New comparisons can promote previously stored listings to candidate status.
+    # Drain the alert queue after the whole batch so those promotions are not missed.
+    for row in db.pending_alerts():
+        message = format_deal(row)
+        try:
+            if send_telegram(message):
+                db.mark_notified(row["url"])
+        except Exception as e:
+            print(f"Telegram ERROR: {e}", file=sys.stderr)
+        if not quiet:
+            print("\n" + message + "\n")
     if not quiet:
         stats = db.stats()
         print(f"Сканирование завершено: новых {added}, всего {stats['total']}, находок {stats['candidates']}, нужен рынок {stats['needs_market']}, рискованных {stats['risky']}. Ошибок источников: {failures}.")
