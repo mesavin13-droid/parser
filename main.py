@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,56 @@ def env_list(name: str) -> list[str]:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    """Parse common ISO-8601, RFC 2822/RSS, and Unix timestamps as UTC."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\\d{10,13}", raw):
+        try:
+            timestamp = float(raw)
+            if timestamp >= 1_000_000_000_000:
+                timestamp /= 1000
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def listing_is_fresh(row: dict[str, Any] | sqlite3.Row, now: datetime | None = None) -> bool:
+    """Use publish time when available, otherwise the last time the source showed it."""
+    published = parse_datetime(row["published_at"])
+    observed = parse_datetime(row["last_seen_at"])
+    created = parse_datetime(row["created_at"])
+    timestamp = published or observed or created
+    if timestamp is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    max_hours = max(1, safe_int_env("MAX_LISTING_AGE_HOURS", 72))
+    age_hours = (current - timestamp).total_seconds() / 3600
+    # Allow minor clock skew, but do not treat arbitrarily future-dated ads as fresh.
+    return -6 <= age_hours <= max_hours
+
+
+def observation_is_fresh(value: Any, now: datetime | None = None) -> bool:
+    observed = parse_datetime(value)
+    if observed is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    max_days = max(1, safe_int_env("MAX_MARKET_DATA_AGE_DAYS", 30))
+    age_hours = (current - observed).total_seconds() / 3600
+    return -6 <= age_hours <= max_days * 24
 
 
 def as_int(value: Any, default: int | None = None) -> int | None:
@@ -130,7 +181,8 @@ class Database:
           repair_cost INTEGER NOT NULL DEFAULT 0, commission_pct REAL NOT NULL DEFAULT 0,
           discount_pct REAL, expected_profit INTEGER, risk_score INTEGER NOT NULL DEFAULT 0,
           risk_notes TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'new',
-          notified INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+          notified INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS market_comps (
           id INTEGER PRIMARY KEY AUTOINCREMENT, model_key TEXT NOT NULL,
@@ -141,6 +193,11 @@ class Database:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_market_dedupe ON market_comps(model_key,title,price,city,source);
         CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status, notified);
         """)
+        # Upgrade databases created by earlier versions without deleting existing data.
+        listing_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(listings)")}
+        if "last_seen_at" not in listing_columns:
+            self.conn.execute("ALTER TABLE listings ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT ''")
+        self.conn.execute("UPDATE listings SET last_seen_at=created_at WHERE last_seen_at=''")
         self.conn.commit()
 
     def close(self) -> None:
@@ -170,15 +227,22 @@ class Database:
         if not model_key:
             return None, 0
         comp_rows = self.conn.execute(
-            "SELECT price FROM market_comps WHERE model_key=? AND price>0 ORDER BY observed_at DESC LIMIT 100",
+            "SELECT price, observed_at FROM market_comps WHERE model_key=? AND price>0 ORDER BY observed_at DESC LIMIT 200",
             (model_key,),
         ).fetchall()
         listing_rows = self.conn.execute(
-            "SELECT url, price FROM listings WHERE model_key=? AND price>0 AND url<>? ORDER BY created_at DESC LIMIT 100",
+            "SELECT url, price, published_at, last_seen_at, created_at FROM listings "
+            "WHERE model_key=? AND price>0 AND url<>? ORDER BY created_at DESC LIMIT 200",
             (model_key, exclude_url),
         ).fetchall()
-        # Each URL contributes at most once through listings; imported comparisons remain usable.
-        values = [int(r["price"]) for r in comp_rows] + [int(r["price"]) for r in listing_rows]
+        # Old price snapshots and offers no longer seen at the source must not skew the market.
+        values = [
+            int(r["price"]) for r in comp_rows
+            if observation_is_fresh(r["observed_at"])
+        ] + [
+            int(r["price"]) for r in listing_rows
+            if listing_is_fresh(r)
+        ]
         if len(values) < 3:
             return None, len(values)
         median = statistics.median(values)
@@ -201,7 +265,9 @@ class Database:
             market_price, samples = self.market_stats(model_key, exclude_url=row["url"])
             discount = max(0.0, (market_price - row["price"]) / market_price * 100) if market_price else None
             profit = int(round(market_price * (1 - row["commission_pct"] / 100) - row["price"] - row["delivery_cost"] - row["repair_cost"])) if market_price else None
-            if market_price is None or samples < 3:
+            if not listing_is_fresh(row):
+                status = "stale"
+            elif market_price is None or samples < 3:
                 status = "needs_market"
             elif row["risk_score"] >= 60:
                 status = "risky"
@@ -288,12 +354,29 @@ class Database:
                expected_profit,risk_score,risk_notes,status,created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
         self.conn.commit()
+        # Remember the latest time the source showed this URL; migration preserves prior records.
+        self.conn.execute("UPDATE listings SET last_seen_at=? WHERE url=?", (now_iso(), url))
+        self.conn.commit()
         # New observations automatically become comparable market data for other offers.
         self.refresh_model(model_key)
         row = dict(self.conn.execute("SELECT * FROM listings WHERE url=?", (url,)).fetchone())
         return not exists, row
 
+    def mark_stale_listings(self) -> int:
+        rows = self.conn.execute(
+            "SELECT url, published_at, last_seen_at, created_at, status FROM listings WHERE status<>'stale'"
+        ).fetchall()
+        stale = [row["url"] for row in rows if not listing_is_fresh(row)]
+        if stale:
+            self.conn.executemany(
+                "UPDATE listings SET status='stale' WHERE url=?",
+                [(url,) for url in stale],
+            )
+            self.conn.commit()
+        return len(stale)
+
     def deals(self, limit: int = 10, candidates_only: bool = True) -> list[dict[str, Any]]:
+        self.mark_stale_listings()
         where = "WHERE status='candidate'" if candidates_only else ""
         rows = self.conn.execute(
             f"SELECT * FROM listings {where} ORDER BY COALESCE(expected_profit,-1) DESC, created_at DESC LIMIT ?",
@@ -302,6 +385,7 @@ class Database:
         return [dict(r) for r in rows]
 
     def pending_alerts(self) -> list[dict[str, Any]]:
+        self.mark_stale_listings()
         rows = self.conn.execute(
             "SELECT * FROM listings WHERE status='candidate' AND notified=0 ORDER BY created_at"
         ).fetchall()
@@ -312,10 +396,12 @@ class Database:
         self.conn.commit()
 
     def stats(self) -> dict[str, int]:
+        self.mark_stale_listings()
         row = self.conn.execute("""SELECT COUNT(*) total,
           SUM(CASE WHEN status='candidate' THEN 1 ELSE 0 END) candidates,
           SUM(CASE WHEN status='needs_market' THEN 1 ELSE 0 END) needs_market,
-          SUM(CASE WHEN status='risky' THEN 1 ELSE 0 END) risky FROM listings""").fetchone()
+          SUM(CASE WHEN status='risky' THEN 1 ELSE 0 END) risky,
+          SUM(CASE WHEN status='stale' THEN 1 ELSE 0 END) stale FROM listings""").fetchone()
         return {k: int(row[k] or 0) for k in row.keys()}
 
 
