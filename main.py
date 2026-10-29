@@ -315,7 +315,10 @@ class Database:
         if SCAM_RE.search(text):
             risk += 55
             notes.append("подозрительное требование оплаты или ссылка")
-        if market_price and price > 0 and price < market_price * 0.45:
+        if market_price is not None and price == 0:
+            risk += 20
+            notes.append("объявление бесплатное: проверьте условия передачи и продавца")
+        elif market_price and price > 0 and price < market_price * 0.45:
             risk += 25
             notes.append("аномально низкая цена: возможен дефект или обман")
         if not raw.get("image_url") and not raw.get("image"):
