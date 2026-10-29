@@ -54,6 +54,8 @@ STOP_WORDS = {
     "доставка", "самовывоз", "торг", "обмен", "цена", "руб", "рублей", "₽", "не", "работает", "работал", "работала",
     "запчасти", "запчасть", "разбит", "разбитый", "неисправен", "неисправна", "дефект", "донор",
     "заблокирован", "заблокирована", "icloud", "айклауд", "утоплен", "утоплена",
+    "отдам", "даром", "бесплатно", "подарю", "подарок", "забирайте",
+    "nvidia", "geforce",
 }
 
 
@@ -150,8 +152,24 @@ def parse_price(text: str) -> int | None:
 
 
 def normalize_model(title: str) -> str:
+    """Normalize common spelling variants without discarding meaningful model variants."""
     cleaned = html.unescape(title or "").lower().replace("ё", "е")
     cleaned = re.sub(r"https?://\S+|\b\d[\d\s]*\s*(?:₽|руб(?:лей|ля|ль)?)", " ", cleaned)
+    # Compact model names are common in classifieds: iPhone13, RTX3060Ti, PS 5.
+    cleaned = re.sub(r"\biphone(?=\d)", "iphone ", cleaned)
+    cleaned = re.sub(
+        r"\b(rtx|gtx|rx|arc)\s*(\d{3,5})\s*(ti|super|xtx|xt)?\b",
+        lambda m: f"{m.group(1)} {m.group(2)} {m.group(3) or ''}",
+        cleaned,
+    )
+    cleaned = re.sub(r"\b(?:sony\s+)?(?:play\s*station|ps)\s*([345])\b", r"ps\1", cleaned)
+    cleaned = re.sub(r"\b(\d{2,4})\s*(?:gb|гб)\b", r"\1 gb", cleaned)
+    cleaned = re.sub(
+        r"\b(\d+(?:[.,]\d+)?)\s*(?:tb|тб)\b",
+        lambda m: m.group(1).replace(",", ".") + " tb",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned)
     cleaned = re.sub(r"[^\w.+-]+", " ", cleaned, flags=re.UNICODE)
     parts = [p for p in cleaned.split() if p not in STOP_WORDS and len(p) > 1]
     return " ".join(parts[:10])
