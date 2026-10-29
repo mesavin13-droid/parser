@@ -753,47 +753,58 @@ def run_telegram_poll(db: Database) -> None:
                 elif command == "/sources":
                     rss = env_list("RSS_FEEDS")
                     avito = env_list("AVITO_SEARCH_URLS")
+                    configured = [(url, "RSS/Atom") for url in rss] + [(url, "Avito") for url in avito]
+                    checks = {item["url"]: item for item in db.source_status()}
                     stats = db.stats()
-                    checks = db.source_status()
                     lines = [
                         "Источники поиска",
                         f"Настроено: RSS/Atom — {len(rss)}, Avito — {len(avito)}",
                         f"Объявлений в базе: {stats['total']}",
                     ]
-                    if not rss and not avito:
+                    if not configured:
                         lines.append("⛔ Источники не настроены. Заполните RSS_FEEDS или AVITO_SEARCH_URLS в .env.")
-                    elif not checks:
-                        lines.append("Ещё не проверялись. Отправьте /scan.")
                     else:
                         lines.append("")
-                        for item in checks[:12]:
-                            label = safe_source_label(item["url"])
-                            if item["last_error"]:
+                        for url, source_type in configured[:12]:
+                            item = checks.get(url)
+                            label = safe_source_label(url)
+                            if item is None:
+                                state = "⏳ ещё не проверен"
+                                last = "нет данных"
+                                detail = "отправьте /scan"
+                            elif item["last_error"]:
                                 state = "⚠️ ошибка"
+                                last = item["last_checked_at"] or "нет данных"
                                 detail = item["last_error"]
                             elif item["last_success_at"]:
                                 state = "✅ доступен"
+                                last = item["last_checked_at"] or "нет данных"
                                 detail = f"получено карточек: {item['last_items']}"
                             else:
                                 state = "⏳ ещё не проверен"
+                                last = item["last_checked_at"] or "нет данных"
                                 detail = "результат пока отсутствует"
-                            last = item["last_checked_at"] or "нет данных"
-                            lines.append(f"{state} {item['source_type']}: {label}")
+                            lines.append(f"{state} {source_type}: {label}")
                             lines.append(f"Проверка: {last} · {detail[:180]}")
+                        if len(configured) > 12:
+                            lines.append(f"Показаны первые 12 из {len(configured)} источников.")
                     answer = "\n".join(lines)
                 elif command == "/scan":
                     answer = "Запускаю проверку источников…"
                     telegram_call("sendMessage", {"chat_id": chat_id, "text": answer})
-                    ingest_sources(db, quiet=False)
+                    added = ingest_sources(db, quiet=False)
                     stats = db.stats()
-                    checks = db.source_status()
+                    configured_urls = set(env_list("RSS_FEEDS") + env_list("AVITO_SEARCH_URLS"))
+                    checks = [item for item in db.source_status() if item["url"] in configured_urls]
                     failed = sum(1 for item in checks if item["last_error"])
                     answer = (
                         "Проверка завершена.\n"
+                        f"Настроено источников: {len(configured_urls)}\n"
                         f"Проверено источников: {len(checks)}\n"
                         f"Источники с ошибками: {failed}\n"
-                        f"Новых выгодных находок в базе: {stats['candidates']}\n"
-                        "Команды: /deals — показать находки, /sources — подробности по источникам."
+                        f"Новых объявлений: {added}\n"
+                        f"Выгодных находок в базе: {stats['candidates']}\n"
+                        "Команды: /deals — находки, /sources — состояние источников."
                     )
                 else:
                     answer = "Неизвестная команда. Используйте /help."
