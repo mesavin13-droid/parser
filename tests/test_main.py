@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
-from main import Database, fetch_avito, normalize_model, parse_datetime, parse_price
+from main import Database, fetch_avito, format_deal, normalize_model, parse_datetime, parse_price
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -127,6 +127,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(row["status"], "candidate")
         self.assertEqual(row["risk_score"], 20)
         self.assertIn("бесплатное", row["risk_notes"])
+        self.assertIn("Цена: БЕСПЛАТНО", format_deal(row))
 
     def test_stale_listing_is_excluded_from_alerts_and_deals(self):
         for price in (10000, 11000, 12000):
