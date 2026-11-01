@@ -273,6 +273,9 @@ class Database:
           last_checked_at TEXT NOT NULL, last_success_at TEXT NOT NULL DEFAULT '',
           last_items INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS app_state (
+          key TEXT PRIMARY KEY, value TEXT NOT NULL
+        );
         """)
         # Upgrade databases created by earlier versions without deleting existing data.
         listing_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(listings)")}
@@ -319,6 +322,21 @@ class Database:
             "SELECT * FROM source_status ORDER BY source_type, url"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_state(self, key: str, default: str = "") -> str:
+        row = self.conn.execute(
+            "SELECT value FROM app_state WHERE key=?",
+            (key,),
+        ).fetchone()
+        return str(row["value"]) if row else default
+
+    def set_state(self, key: str, value: str) -> None:
+        self.conn.execute(
+            """INSERT INTO app_state(key, value) VALUES(?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (key, str(value)),
+        )
+        self.conn.commit()
 
     def add_market(self, row: dict[str, Any]) -> bool:
         title = str(row.get("title") or row.get("model") or "").strip()
@@ -973,22 +991,30 @@ def run_telegram_poll(db: Database) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError("Укажите TELEGRAM_BOT_TOKEN в .env")
-    offset = 0
-    print("Telegram polling запущен. Остановка: Ctrl+C")
+    offset = max(0, safe_int_env("TELEGRAM_UPDATE_OFFSET", 0))
+    offset = max(offset, as_int(db.get_state("telegram_update_offset", "0"), 0) or 0)
+    print(f"Telegram polling запущен. Продолжаю с update_id >= {offset}. Остановка: Ctrl+C")
     while True:
         try:
             result = telegram_call("getUpdates", {"offset": offset, "timeout": 20, "allowed_updates": json.dumps(["message"])})
             for update in result.get("result", []):
-                offset = max(offset, int(update["update_id"]) + 1)
+                update_id = int(update.get("update_id", -1))
                 msg = update.get("message", {})
                 chat_id = msg.get("chat", {}).get("id")
                 text = (msg.get("text") or "").strip()
+                next_offset = max(offset, update_id + 1)
+                if update_id < 0:
+                    continue
                 if not chat_id or not text.startswith("/"):
+                    offset = next_offset
+                    db.set_state("telegram_update_offset", str(offset))
                     continue
                 command = text.split()[0].split("@")[0].lower()
                 allowed = os.getenv("TELEGRAM_CHAT_ID", "").strip()
                 if allowed and str(chat_id) != allowed:
                     telegram_call("sendMessage", {"chat_id": chat_id, "text": "Бот настроен для другого чата."})
+                    offset = next_offset
+                    db.set_state("telegram_update_offset", str(offset))
                     continue
                 if command in ("/start", "/help"):
                     answer = "Tech Deal Hunter готов.\n/id — показать ID чата\n/deals — лучшие находки\n/stats — статистика\n/sources — состояние подключённых источников\n/scan — проверить подключённые источники\n\nРыночную цену бот оценивает автоматически по собранным аналогам; нужно минимум 3 сопоставимых предложения. Источники: RSS/Atom, публичный поиск Avito и публичные Telegram-каналы из TELEGRAM_CHANNELS."
@@ -1072,6 +1098,9 @@ def run_telegram_poll(db: Database) -> None:
                 else:
                     answer = "Неизвестная команда. Используйте /help."
                 telegram_call("sendMessage", {"chat_id": chat_id, "text": answer[:3900], "disable_web_page_preview": "true"})
+                # Persist only after this update was fully handled, so failed commands can retry.
+                offset = next_offset
+                db.set_state("telegram_update_offset", str(offset))
         except KeyboardInterrupt:
             print("\nОстановлено.")
             return
