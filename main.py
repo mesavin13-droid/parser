@@ -53,6 +53,17 @@ COMPACT_LABEL_PRICE_RE = re.compile(
     r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(тыс(?:\.|яч(?:а|и)?)?|к|k)\b",
     re.I,
 )
+CURRENT_PRICE_CONTEXT_RE = re.compile(
+    r"(?:сейчас|стало|новая\s+цена|цена\s+(?:сейчас|по\s+акции|со\s+скидкой)|"
+    r"по\s+промокоду|с\s+промокодом|итого|всего\s+за)\s*[:—-]?\s*"
+    r"(\d{1,3}(?:(?:[ \u00a0\u202f.,])\d{3}){0,2}|\d{4,9})"
+    r"\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.?)(?!\w)",
+    re.I,
+)
+OLD_PRICE_PREFIX_RE = re.compile(
+    r"(?:вместо|было|старая\s+цена|обычная\s+цена|прежняя\s+цена|раньше)\s*[:—-]?\s*$",
+    re.I,
+)
 BAD_RE = re.compile(
     r"на\s+запчаст|не\s+работает|не\s+включа|разбит|треснут|утоплен|после\s+воды|"
     r"заблокир|icloud|айклауд|аклауд|донор|дефект|неисправ",
@@ -159,15 +170,36 @@ def parse_price(text: str) -> int | None:
     text = html.unescape(text or "").replace("\u202f", " ")
     if FREE_RE.search(text):
         return 0
-    match = PRICE_RE.search(text)
-    if match:
-        return as_int(match.group(1))
-    compact = COMPACT_CURRENCY_PRICE_RE.search(text) or COMPACT_LABEL_PRICE_RE.search(text)
+
+    # Prefer an explicitly labeled current/promotional price over the crossed-out price.
+    current = CURRENT_PRICE_CONTEXT_RE.search(text)
+    if current:
+        return as_int(current.group(1))
+
+    def is_old_price(match: re.Match[str]) -> bool:
+        prefix = text[max(0, match.start() - 36):match.start()]
+        return bool(OLD_PRICE_PREFIX_RE.search(prefix))
+
+    # If a post lists both the old and new amount without a "now" label,
+    # skip the amount directly following "was/old price/instead of".
+    for pattern in (PRICE_RE, COMPACT_CURRENCY_PRICE_RE):
+        for match in pattern.finditer(text):
+            if is_old_price(match):
+                continue
+            if pattern is PRICE_RE:
+                return as_int(match.group(1))
+            amount = float(match.group(1).replace(",", "."))
+            unit = match.group(2).lower()
+            multiplier = 1000 if unit.startswith("тыс") or unit in {"к", "k"} else 1
+            return int(round(amount * multiplier))
+
+    compact = COMPACT_LABEL_PRICE_RE.search(text)
     if compact:
         amount = float(compact.group(1).replace(",", "."))
         unit = compact.group(2).lower()
         multiplier = 1000 if unit.startswith("тыс") or unit in {"к", "k"} else 1
         return int(round(amount * multiplier))
+
     match = LABEL_PRICE_RE.search(text)
     return as_int(match.group(1)) if match else None
 
