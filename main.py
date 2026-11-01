@@ -228,6 +228,46 @@ def normalize_model(title: str) -> str:
     return " ".join(parts[:10])
 
 
+PROMO_TITLE_FILLER_WORDS = {
+    "скидка", "скидки", "скидку", "скидок", "акция", "акции", "промокод",
+    "промокоды", "купон", "купоны", "подборка", "подборки", "распродажа",
+    "распродажи", "товар", "товары", "выгодный", "выгодные", "лучший",
+    "лучшие", "предложение", "предложения", "сегодня", "только", "промо",
+    "код", "бонус", "бонусы", "экономия", "экономьте", "цена", "цены",
+    "озон", "ozon", "wildberries", "вайлдберриз", "wb", "aliexpress",
+    "алиэкспресс", "pepper", "на", "для", "в", "по", "до", "от", "с",
+    "из", "и", "а", "но", "это", "всего", "почти", "новинка",
+}
+
+SINGLE_WORD_PRODUCT_TITLES = {
+    "iphone", "airpods", "ipad", "macbook", "playstation", "ps3", "ps4", "ps5",
+    "xbox", "rtx", "gtx", "ryzen", "ноутбук", "ноутбуки", "телефон", "смартфон",
+    "монитор", "телевизор", "наушники", "пылесос", "холодильник", "стиральная",
+    "кофемашина", "видеокарта", "процессор", "планшет", "камера", "фотоаппарат",
+    "колонка", "консоль", "принтер", "роутер", "часы", "смартчасы", "ssd", "hdd",
+    "powerbank", "увлажнитель", "кондиционер", "микроволновка", "дрель",
+    "шуруповерт", "перфоратор", "велосипед", "самокат", "электросамокат",
+    "кресло", "диван", "стол", "шкаф", "детская", "коляска", "автокресло",
+}
+
+
+def is_specific_product_title(title: str) -> bool:
+    """Reject channel-wide promo headlines that do not identify an actual product."""
+    normalized = normalize_model(title)
+    words = [
+        word for word in normalized.split()
+        if word not in PROMO_TITLE_FILLER_WORDS
+    ]
+    if not words:
+        return False
+    # A model/SKU containing both letters and digits is a strong product identifier.
+    if any(any(char.isalpha() for char in word) and any(char.isdigit() for char in word) for word in words):
+        return True
+    if len(words) >= 2:
+        return True
+    return words[0] in SINGLE_WORD_PRODUCT_TITLES
+
+
 def safe_int_env(key: str, default: int) -> int:
     try:
         return int(os.getenv(key, str(default)))
@@ -684,8 +724,9 @@ class TelegramPublicChannelParser(HTMLParser):
                         if not line.startswith(("http://", "https://"))
                         and re.search(r"[A-Za-zА-Яа-я0-9]", line)
                         and not re.fullmatch(r"(?:\W*#[\w_]+\W*)+", line)
+                        and is_specific_product_title(line)
                     ),
-                    lines[0] if lines else "",
+                    "",
                 )
                 title = re.sub(
                     r"\s*(?:[|—–-]\s*)?(?:(?:цена|стоимость|за|отдам\s+за)\s*[:—-]?\s*)?"
