@@ -177,6 +177,13 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(refreshed["market_price"], 11000)
         self.assertEqual(refreshed["status"], "candidate")
 
+    def test_price_parser_prefers_current_discounted_price(self):
+        self.assertEqual(parse_price("Вместо 60 000 ₽ — 39 990 ₽"), 39990)
+        self.assertEqual(parse_price("Было 60 000 рублей, стало 39 990 рублей"), 39990)
+        self.assertEqual(parse_price("Старая цена 60 000 руб., новая цена 39 990 руб."), 39990)
+        self.assertEqual(parse_price("Обычная цена 60 000 ₽, по промокоду 39 990 ₽"), 39990)
+        self.assertEqual(parse_price("Цена 39 990 ₽ (вместо 60 000 ₽)"), 39990)
+
     def test_compact_price_formats(self):
         self.assertEqual(parse_price("Цена 25к"), 25000)
         self.assertEqual(parse_price("За 18,5 тыс."), 18500)
