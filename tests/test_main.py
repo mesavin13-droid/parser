@@ -98,6 +98,19 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(checks[feed_url]["last_error"], "")
         self.assertIn("HTTP 403", checks[avito_url]["last_error"])
 
+    def test_telegram_update_offset_survives_database_reopen(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "deals.sqlite3"
+            first = Database(db_path)
+            first.set_state("telegram_update_offset", "123456")
+            first.close()
+
+            second = Database(db_path)
+            try:
+                self.assertEqual(second.get_state("telegram_update_offset"), "123456")
+            finally:
+                second.close()
+
     def test_file_database_uses_wal_for_multiple_workers(self):
         with tempfile.TemporaryDirectory() as folder:
             db = Database(Path(folder) / "deals.sqlite3")
