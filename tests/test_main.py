@@ -220,6 +220,37 @@ class AnalyzerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             telegram_channel_public_url("@bad")
 
+    def test_telegram_skips_promo_only_posts_with_money_amounts(self):
+        published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        page = f"""
+        <div class="tgme_widget_message" data-post="gadget_deals/127">
+          <div class="tgme_widget_message_text js-message_text">
+            🔥 Скидки на Ozon! Промокод 500 ₽ сегодня
+          </div>
+          <a class="tgme_widget_message_date"><time datetime="{published}"></time></a>
+        </div>
+        """
+        with patch("main.fetch_url", return_value=(page, "text/html")):
+            rows = fetch_telegram_channel("@gadget_deals", "Новосибирск")
+        self.assertEqual(rows, [])
+
+    def test_telegram_skips_generic_promo_heading_and_keeps_product_line(self):
+        published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        page = f"""
+        <div class="tgme_widget_message" data-post="gadget_deals/128">
+          <div class="tgme_widget_message_text js-message_text">
+            🔥 Подборка выгодных скидок на Ozon сегодня<br/>
+            Робот-пылесос Ecovacs Deebot T90 Pro Omni за 39 990 ₽
+          </div>
+          <a class="tgme_widget_message_date"><time datetime="{published}"></time></a>
+        </div>
+        """
+        with patch("main.fetch_url", return_value=(page, "text/html")):
+            rows = fetch_telegram_channel("@gadget_deals", "Новосибирск")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "Робот-пылесос Ecovacs Deebot T90 Pro Omni")
+        self.assertEqual(rows[0]["price"], 39990)
+
     def test_telegram_post_title_drops_explicit_currency_price(self):
         published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         page = f"""
